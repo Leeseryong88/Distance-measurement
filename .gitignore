@@ -1,7 +1,12 @@
 ﻿node_modules/
+.env
 .vercel/
+.DS_Store
+npm-debug.log*
+yarn-error.log*
+coverage/
 dist/
 build/
-.env
-.env.local
-.DS_Store
+.lock-wscript
+*.log
+*.tmp

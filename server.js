@@ -316,11 +316,26 @@ async function geocodeWithTmap(addressOrKeyword) {
     const items = res.data?.coordinateInfo?.coordinate;
     if (items && items.length > 0) {
       const item = items[0];
-      // TMap 응답은 EPSG:4326(WGS84)과 EPSG:5179(국가TM)가 섞여 올 수 있음.
-      // noorLon/noorLat는 대부분 TM 좌표이므로 lon/lat가 있으면 우선 사용, 없으면 noor* 사용
-      const lon = item.lon ? Number(item.lon) : Number(item.noorLon);
-      const lat = item.lat ? Number(item.lat) : Number(item.noorLat);
-      if (!Number.isNaN(lon) && !Number.isNaN(lat)) return { lon, lat };
+      let addrCoord = null;
+      // lon/lat(WGS84)가 없고 noor*(TM, EPSG:5179)만 있는 경우 변환 API 사용
+      if (item.lon != null && item.lat != null) {
+        const lon = Number(item.lon);
+        const lat = Number(item.lat);
+        if (!Number.isNaN(lon) && !Number.isNaN(lat)) addrCoord = { lon, lat };
+      }
+      if (!addrCoord && item.noorLon != null && item.noorLat != null) {
+        const conv = await tmapConvertToWgs84(Number(item.noorLon), Number(item.noorLat), 'EPSG5179');
+        if (conv) addrCoord = conv;
+      }
+      // 동일 문자열로 POI를 조회해 front 좌표가 근처에 있으면 front 좌표 우선 사용
+      try {
+        const poiFront = await tmapPoiFrontCoord(addressOrKeyword);
+        if (poiFront && addrCoord) {
+          const gap = haversineMeters(addrCoord.lat, addrCoord.lon, poiFront.lat, poiFront.lon);
+          if (gap <= 500) return poiFront; // 500m 이내면 front 진입 좌표 우선
+        }
+      } catch (_) {}
+      if (addrCoord) return addrCoord;
     }
   } catch (_) {}
   // 2) 키워드(POI) 검색 fallback
@@ -337,19 +352,88 @@ async function geocodeWithTmap(addressOrKeyword) {
     });
     const poi = res.data?.searchPoiInfo?.pois?.poi?.[0];
     if (!poi) return null;
-    // POI에서도 lon/lat를 우선 사용하고, 없으면 noor/ front 순으로 폴백
-    const lon = poi.lon ? Number(poi.lon) : Number(poi.noorLon || poi.frontLon);
-    const lat = poi.lat ? Number(poi.lat) : Number(poi.noorLat || poi.frontLat);
-    if (Number.isNaN(lon) || Number.isNaN(lat)) return null;
-    return { lon, lat };
+    // POI는 도로 진입 좌표(frontLon/Lat)를 우선 사용 → 라우팅 일치도 향상
+    if (poi.frontLon != null && poi.frontLat != null) {
+      const lon = Number(poi.frontLon);
+      const lat = Number(poi.frontLat);
+      if (!Number.isNaN(lon) && !Number.isNaN(lat)) return { lon, lat };
+    }
+    if (poi.lon != null && poi.lat != null) {
+      const lon = Number(poi.lon);
+      const lat = Number(poi.lat);
+      if (!Number.isNaN(lon) && !Number.isNaN(lat)) return { lon, lat };
+    }
+    if (poi.noorLon != null && poi.noorLat != null) {
+      const conv = await tmapConvertToWgs84(Number(poi.noorLon), Number(poi.noorLat), 'EPSG5179');
+      if (conv) return conv;
+    }
+    return null;
   } catch (_) {
     return null;
   }
 }
 
-async function routeDistanceKakaoMeters(from, to) {
+// Tmap 좌표계(TM/기타) → WGS84GEO로 변환
+async function tmapConvertToWgs84(x, y, sourceCoord = 'EPSG5179') {
+  try {
+    const url = 'https://apis.openapi.sk.com/tmap/geo/transcoord';
+    const res = await axios.get(url, {
+      params: {
+        version: 1,
+        format: 'json',
+        appKey: TMAP_APP_KEY,
+        coordType: sourceCoord,
+        toCoordType: 'WGS84GEO',
+        x: String(x),
+        y: String(y)
+      }
+    });
+    const lon = Number(res.data?.coordinate?.lon);
+    const lat = Number(res.data?.coordinate?.lat);
+    if (!Number.isNaN(lon) && !Number.isNaN(lat)) return { lon, lat };
+    return null;
+  } catch (_) {
+    return null;
+  }
+}
+
+async function tmapPoiFrontCoord(keyword) {
+  try {
+    const url = 'https://apis.openapi.sk.com/tmap/pois';
+    const res = await axios.get(url, {
+      params: {
+        version: 1,
+        format: 'json',
+        count: 1,
+        searchKeyword: keyword,
+        appKey: TMAP_APP_KEY
+      }
+    });
+    const poi = res.data?.searchPoiInfo?.pois?.poi?.[0];
+    if (poi && poi.frontLon != null && poi.frontLat != null) {
+      const lon = Number(poi.frontLon);
+      const lat = Number(poi.frontLat);
+      if (!Number.isNaN(lon) && !Number.isNaN(lat)) return { lon, lat };
+    }
+    return null;
+  } catch (_) {
+    return null;
+  }
+}
+
+function haversineMeters(lat1, lon1, lat2, lon2) {
+  const R = 6371000; // meters
+  const toRad = (d) => (d * Math.PI) / 180;
+  const dLat = toRad(lat2 - lat1);
+  const dLon = toRad(lon2 - lon1);
+  const a = Math.sin(dLat / 2) ** 2 + Math.cos(toRad(lat1)) * Math.cos(toRad(lat2)) * Math.sin(dLon / 2) ** 2;
+  const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
+  return R * c;
+}
+
+async function routeSummaryKakao(from, to) {
   const url = 'https://apis-navi.kakaomobility.com/v1/directions';
-  // 우선 최단거리 우선으로 시도하고, 허용되지 않으면 호환 값으로 순차 폴백
+  // 최소시간 경로의 거리/시간을 선택해 반환
   async function call(priorityValue) {
     const res = await axios.get(url, {
       params: {
@@ -359,45 +443,67 @@ async function routeDistanceKakaoMeters(from, to) {
       },
       headers: { Authorization: `KakaoAK ${KAKAO_MOBILITY_REST_KEY}` }
     });
-    const routes = res.data?.routes;
-    if (!routes || routes.length === 0) return null;
-    const summary = routes[0]?.summary;
-    return summary?.distance ?? null; // meters
+    const routes = Array.isArray(res.data?.routes) ? res.data.routes : [];
+    if (routes.length === 0) return { distance: null, duration: null };
+    let best = null;
+    for (const r of routes) {
+      const dur = r?.summary?.duration;
+      if (typeof dur === 'number') {
+        if (!best || dur < best.summary.duration) best = r;
+      }
+    }
+    if (!best) best = routes[0];
+    const distance = typeof best?.summary?.distance === 'number' ? best.summary.distance : null; // meters
+    const durationMs = typeof best?.summary?.duration === 'number' ? best.summary.duration : null; // ms
+    const duration = durationMs != null ? Math.round(durationMs / 1000) : null; // seconds
+    return { distance, duration };
   }
 
   try {
-    // SHORTEST → DISTANCE → RECOMMEND → no priority
-    return await call('SHORTEST');
+    // 추천(시간 가중) 우선 시도 → 실패 시 다른 옵션
+    return await call('RECOMMEND');
   } catch (e) {
     const msg = e?.response?.data?.msg || e?.response?.data?.message || '';
     if (String(msg).toLowerCase().includes('priority')) {
-      try { return await call('DISTANCE'); } catch (_) {}
-      try { return await call('RECOMMEND'); } catch (_) {}
       try { return await call(null); } catch (_) {}
+      try { return await call('DISTANCE'); } catch (_) {}
+      try { return await call('SHORTEST'); } catch (_) {}
     }
     throw e;
   }
 }
 
-async function routeDistanceTmapMeters(from, to) {
-  // Tmap v1 routes: 여러 searchOption을 시도하여 최단거리(값이 가장 작은 totalDistance)를 채택
-  const baseUrl = 'https://apis.openapi.sk.com/tmap/routes?version=1&format=json';
-
-  async function parseDistance(data) {
-    const features = data?.features;
-    if (!features || features.length === 0) return null;
-    for (const f of features) {
-      const d = f?.properties?.totalDistance;
-      if (typeof d === 'number') return d;
+function parseTmapDistanceAndTime(data) {
+  const features = data?.features;
+  if (!features || features.length === 0) return { distance: null, time: null };
+  for (const f of features) {
+    const d = f?.properties?.totalDistance;
+    const t = f?.properties?.totalTime;
+    if (typeof d === 'number' || typeof t === 'number') {
+      return {
+        distance: typeof d === 'number' ? d : null,
+        time: typeof t === 'number' ? t : null
+      };
     }
-    let sum = 0;
-    for (const f of features) {
-      const seg = f?.properties?.distance;
-      if (typeof seg === 'number') sum += seg;
-    }
-    return sum > 0 ? sum : null;
   }
+  let sumDist = 0;
+  let sumTime = 0;
+  let hasDist = false;
+  let hasTime = false;
+  for (const f of features) {
+    const segD = f?.properties?.distance;
+    const segT = f?.properties?.time;
+    if (typeof segD === 'number') { sumDist += segD; hasDist = true; }
+    if (typeof segT === 'number') { sumTime += segT; hasTime = true; }
+  }
+  return {
+    distance: hasDist ? sumDist : null,
+    time: hasTime ? sumTime : null
+  };
+}
 
+async function routeTmapOptionSummary(from, to, searchOption) {
+  const baseUrl = 'https://apis.openapi.sk.com/tmap/routes?version=1&format=json';
   async function call(body) {
     const res = await axios.post(baseUrl, body, {
       headers: {
@@ -405,9 +511,8 @@ async function routeDistanceTmapMeters(from, to) {
         appKey: TMAP_APP_KEY
       }
     });
-    return parseDistance(res.data);
+    return parseTmapDistanceAndTime(res.data);
   }
-
   const common = {
     startX: String(from.lon),
     startY: String(from.lat),
@@ -416,34 +521,22 @@ async function routeDistanceTmapMeters(from, to) {
     reqCoordType: 'WGS84GEO',
     resCoordType: 'WGS84GEO'
   };
-
-  // 문서와 현행 앱간 옵션 차이를 흡수하기 위해, 일반적으로 최단거리에 해당하는 후보들을 모두 시도
-  const optionCandidates = [2, 0, 4, 3]; // 2(최단), 0(추천/호환), 4(고속도로 제외), 3(고속도로 우선)
-  let best = null;
-  for (const opt of optionCandidates) {
-    // 교통 미반영 → 반영 순으로 시도
-    for (const traffic of ['N', 'Y']) {
-      try {
-        const dist = await call({ ...common, searchOption: opt, trafficInfo: traffic });
-        if (typeof dist === 'number') {
-          if (best == null || dist < best) best = dist;
-        }
-      } catch (_) {
-        // continue
-      }
-    }
-  }
-
-  if (best != null) return best;
-
-  // 마지막 폴백: GET 방식 한 번 더 시도
+  // 오직 교통 미반영(순수 거리)으로 호출
   try {
-    const params = { ...common, searchOption: 2, trafficInfo: 'N' };
+    const { distance, time } = await call({ ...common, searchOption, trafficInfo: 'N', tollgateFareOption: 0 });
+    if (distance != null || time != null) {
+      return { distanceMeters: distance, timeSeconds: time };
+    }
+  } catch (_) { /* continue */ }
+  // 마지막 폴백: GET(거리 위주)
+  try {
+    const params = { ...common, searchOption, trafficInfo: 'N', tollgateFareOption: 0 };
     const res = await axios.get(baseUrl, { params, headers: { appKey: TMAP_APP_KEY } });
-    const dist = await parseDistance(res.data);
-    if (typeof dist === 'number') return dist;
-  } catch (_) {}
-  return null;
+    const { distance, time } = parseTmapDistanceAndTime(res.data);
+    return { distanceMeters: distance, timeSeconds: time };
+  } catch (_) {
+    return { distanceMeters: null, timeSeconds: null };
+  }
 }
 
 app.post('/api/compare', async (req, res) => {
@@ -515,7 +608,9 @@ app.post('/api/compare', async (req, res) => {
       }
 
       let kakaoDistance = null;
+      let kakaoTime = null;
       let tmapDistance = null;
+      let tmapTime = null;
       let kakaoError = null;
       let tmapError = null;
 
@@ -533,21 +628,45 @@ app.post('/api/compare', async (req, res) => {
 
       if (kakaoOrigin && kakaoDestination) {
         try {
-          kakaoDistance = await routeDistanceKakaoMeters(kakaoOrigin, kakaoDestination);
+          const kakao = await routeSummaryKakao(kakaoOrigin, kakaoDestination);
+          kakaoDistance = kakao?.distance ?? null;
+          kakaoTime = kakao?.duration ?? null;
         } catch (e) {
           kakaoError = e?.response?.data?.msg || e?.response?.data?.message || e.message;
         }
-        if (kakaoDistance == null && !kakaoError) {
+        if (kakaoDistance == null && kakaoTime == null && !kakaoError) {
           kakaoError = '카카오 경로 없음';
         }
       }
       if (tmapOrigin && tmapDestination) {
         try {
-          tmapDistance = await routeDistanceTmapMeters(tmapOrigin, tmapDestination);
+          // T맵 최단거리: searchOption = 2
+          const attempts = [];
+          const base1 = await routeTmapOptionSummary(tmapOrigin, tmapDestination, 2);
+          attempts.push({ label: 'T->T', ...base1 });
+          // 지오코딩 편차 보정을 위해 카카오 좌표 조합도 시도해 더 짧은 경로를 채택
+          if (kakaoOrigin) {
+            const a = await routeTmapOptionSummary(kakaoOrigin, tmapDestination, 2);
+            attempts.push({ label: 'K->T', ...a });
+          }
+          if (kakaoDestination) {
+            const b = await routeTmapOptionSummary(tmapOrigin, kakaoDestination, 2);
+            attempts.push({ label: 'T->K', ...b });
+          }
+          if (kakaoOrigin && kakaoDestination) {
+            const c = await routeTmapOptionSummary(kakaoOrigin, kakaoDestination, 2);
+            attempts.push({ label: 'K->K', ...c });
+          }
+          // 최단거리 기준 최적 시나리오 선택
+          let best = attempts
+            .filter(x => typeof x.distanceMeters === 'number')
+            .sort((a, b) => a.distanceMeters - b.distanceMeters)[0] || attempts[0];
+          tmapDistance = best?.distanceMeters ?? null;
+          tmapTime = best?.timeSeconds ?? null;
         } catch (e) {
           tmapError = e?.response?.data?.msg || e?.response?.data?.message || e.message;
         }
-        if (tmapDistance == null && !tmapError) {
+        if (tmapDistance == null && tmapTime == null && !tmapError) {
           tmapError = 'T맵 경로 없음';
         }
       }
@@ -557,6 +676,8 @@ app.post('/api/compare', async (req, res) => {
         address,
         kakao: kakaoDistance,
         tmap: tmapDistance,
+        kakaoTime: kakaoTime,
+        tmapTime: tmapTime,
         kakaoType: analyzedOrigin?.type || null,
         tmapType: analyzedOrigin?.type || null,
         normalizedOrigin,
@@ -579,8 +700,12 @@ app.get('/api/health', (req, res) => {
 });
 
 const port = process.env.PORT || 3000;
-app.listen(port, () => {
-  console.log(`Server listening on http://localhost:${port}`);
-});
+if (process.env.VERCEL) {
+  module.exports = app;
+} else {
+  app.listen(port, () => {
+    console.log(`Server listening on http://localhost:${port}`);
+  });
+}
 
 

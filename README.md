@@ -29,6 +29,14 @@ npm run dev
 
 브라우저에서 `http://localhost:3000` 접속 후 사용합니다.
 
+### Vercel 배포 (서버리스)
+
+이 프로젝트는 Vercel 서버리스에 대응했습니다.
+
+1) 코드 반영 후 Vercel에 연결하면 `api/index.js`가 Express 앱을 서버리스로 래핑합니다.
+2) 환경변수(`KAKAO_REST_KEY`, `TMAP_APP_KEY`, 등)를 Vercel 프로젝트 설정에 추가하세요.
+3) 프런트의 fetch(`/api/...`)는 그대로 동작합니다.
+
 ## 사용 방법
 
 1. 테이블 첫 번째 칸의 텍스트 영역에 출발지 주소를 한 줄에 하나씩 붙여넣기
