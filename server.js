@@ -13,6 +13,10 @@ app.use(express.urlencoded({ extended: true }));
 
 app.use(express.static(path.join(__dirname, 'public')));
 
+// 서버리스 환경 지연을 줄이기 위한 기본 타임아웃 설정
+const AXIOS_TIMEOUT_MS = Number(process.env.AXIOS_TIMEOUT_MS || 8000);
+axios.defaults.timeout = AXIOS_TIMEOUT_MS;
+
 const KAKAO_REST_KEY = process.env.KAKAO_REST_KEY || '';
 // 카카오모빌리티 내비 Directions API 키(없으면 KAKAO_REST_KEY 사용 시도)
 const KAKAO_MOBILITY_REST_KEY = process.env.KAKAO_MOBILITY_REST_KEY || KAKAO_REST_KEY || '';

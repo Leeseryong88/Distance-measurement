@@ -133,10 +133,11 @@
             body: JSON.stringify(body)
           });
           if (!res.ok) {
-            const err = await res.json().catch(() => ({}));
-            throw new Error(err.message || '서버 오류');
+            let msg = '서버 오류';
+            try { const err = await res.json(); if (err?.message) msg = err.message; } catch (_) {}
+            throw new Error(msg);
           }
-          const data = await res.json();
+          const data = await res.json().catch(() => ({ results: [] }));
           renderResults(addresses, data.results || []);
           statusEl.textContent += '';
           statusEl.textContent = '완료';

@@ -37,6 +37,9 @@ npm run dev
 2) 환경변수(`KAKAO_REST_KEY`, `TMAP_APP_KEY`, 등)를 Vercel 프로젝트 설정에 추가하세요.
 3) 프런트의 fetch(`/api/...`)는 그대로 동작합니다.
 
+환경 변수 참고:
+- `AXIOS_TIMEOUT_MS` (선택): 외부 API 기본 타임아웃(ms). 기본 8000ms
+
 ## 사용 방법
 
 1. 테이블 첫 번째 칸의 텍스트 영역에 출발지 주소를 한 줄에 하나씩 붙여넣기
