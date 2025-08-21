@@ -703,6 +703,22 @@ app.get('/api/health', (req, res) => {
   res.json({ ok: true });
 });
 
+// 간단 T맵 키/권한 상태 점검용 디버그
+app.get('/api/debug/tmap', async (req, res) => {
+  try {
+    if (!TMAP_APP_KEY) return res.status(400).json({ ok: false, message: 'TMAP_APP_KEY 미설정' });
+    // 가벼운 키 검증: transcoord 호출(짧고 빠름)
+    const url = 'https://apis.openapi.sk.com/tmap/geo/transcoord';
+    const r = await axios.get(url, {
+      params: { version: 1, format: 'json', appKey: TMAP_APP_KEY, coordType: 'WGS84GEO', toCoordType: 'WGS84GEO', x: '127.0', y: '37.5' }
+    });
+    const ok = !!r.data?.coordinate;
+    res.json({ ok, sample: r.data?.coordinate || null });
+  } catch (e) {
+    res.status(500).json({ ok: false, error: e?.response?.data || e.message });
+  }
+});
+
 const port = process.env.PORT || 3000;
 if (process.env.VERCEL) {
   module.exports = app;
