@@ -1,0 +1,179 @@
+<!doctype html>
+<html lang="ko">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>거리 비교 웹앱</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;600&display=swap" rel="stylesheet">
+    <style>
+      body { font-family: Inter, system-ui, -apple-system, Segoe UI, Roboto, sans-serif; margin: 24px; background: #f8fafc; }
+      h1 { font-size: 20px; margin-bottom: 16px; }
+      .toolbar { display: flex; gap: 8px; margin-bottom: 12px; align-items: center; }
+      input[type="text"] { padding: 8px 10px; border: 1px solid #cbd5e1; border-radius: 6px; width: 360px; background: #fff; }
+      button { padding: 8px 12px; background: #2563eb; color: white; border: none; border-radius: 6px; cursor: pointer; }
+      button:disabled { background: #93c5fd; cursor: not-allowed; }
+      table { width: 100%; border-collapse: collapse; background: white; table-layout: fixed; }
+      th, td { border: 1px solid #e2e8f0; padding: 8px; font-size: 14px; vertical-align: top; }
+      th { background: #f1f5f9; text-align: left; }
+      textarea { width: 100%; height: 260px; border: none; outline: none; padding: 6px; resize: vertical; font-size: 14px; }
+      .note { color: #64748b; font-size: 12px; margin-bottom: 8px; }
+      .mono { font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, 'Liberation Mono', 'Courier New', monospace; }
+      .subnote { color:#475569; font-size:12px; }
+    </style>
+  </head>
+  <body>
+    <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='0.9em' font-size='90'>📍</text></svg>">
+    <h1>카카오맵 / T맵 최단거리 비교</h1>
+    <div class="note">첫 번째 열에 주소(출발지)를 행 단위로 붙여넣으세요. 상단 입력창에 비교 대상 주소(도착지)를 넣고 거리 비교를 실행합니다.</div>
+    <div class="toolbar">
+      <input id="destination" type="text" placeholder="도착지 주소 또는 장소명 (예: 서울역, 세종대로 110)" />
+      <button id="compareBtn">거리 비교하기</button>
+      <button id="downloadBtn">엑셀(CSV) 다운로드</button>
+      <span id="status" class="note"></span>
+    </div>
+
+    <div class="note">거주지 주소를 아래 입력칸에 여러 줄로 붙여넣고, 비교를 실행하세요.</div>
+    <textarea id="addressBulk" placeholder="한 줄에 하나씩 주소를 붙여넣기"></textarea>
+
+    <table>
+      <thead>
+        <tr>
+          <th style="width: 52%">전처리 주소</th>
+          <th style="width: 16%">카카오맵 (km)</th>
+          <th style="width: 16%">T맵 (km)</th>
+          <th style="width: 16%">GAP (km)</th>
+        </tr>
+      </thead>
+      <tbody id="resultsBody"></tbody>
+    </table>
+
+    <script>
+      const destinationInput = document.getElementById('destination');
+      const compareBtn = document.getElementById('compareBtn');
+      const statusEl = document.getElementById('status');
+      const addressBulk = document.getElementById('addressBulk');
+      const resultsBody = document.getElementById('resultsBody');
+      const downloadBtn = document.getElementById('downloadBtn');
+      let lastExportRows = [];
+
+      function toKmText(meters) {
+        if (meters == null || meters === '') return '';
+        const km = Number(meters) / 1000;
+        if (Number.isNaN(km)) return '';
+        return km.toFixed(2);
+      }
+
+      function toKmNumber(meters) {
+        if (meters == null || meters === '') return null;
+        const km = Number(meters) / 1000;
+        if (Number.isNaN(km)) return null;
+        return km;
+      }
+
+      function renderResults(addresses, results) {
+        resultsBody.innerHTML = '';
+        lastExportRows = [];
+        const n = Math.max(addresses.length, results.length);
+        for (let i = 0; i < n; i++) {
+          const r = results[i] || {};
+          const tr = document.createElement('tr');
+          const tdNorm = document.createElement('td');
+          tdNorm.textContent = r.normalizedOrigin || '';
+          const tdK = document.createElement('td');
+          const kakaoKm = toKmNumber(r.kakao);
+          tdK.textContent = kakaoKm != null ? kakaoKm.toFixed(2) : '';
+          const tdT = document.createElement('td');
+          const tmapKm = toKmNumber(r.tmap);
+          tdT.textContent = tmapKm != null ? tmapKm.toFixed(2) : '';
+          const tdGap = document.createElement('td');
+          const gap = kakaoKm != null && tmapKm != null ? Math.abs(kakaoKm - tmapKm) : null;
+          tdGap.textContent = gap != null ? gap.toFixed(2) : '';
+          tr.appendChild(tdNorm);
+          tr.appendChild(tdK);
+          tr.appendChild(tdT);
+          tr.appendChild(tdGap);
+          resultsBody.appendChild(tr);
+
+          lastExportRows.push([
+            tdNorm.textContent,
+            tdK.textContent,
+            tdT.textContent,
+            tdGap.textContent
+          ]);
+        }
+      }
+
+      compareBtn.addEventListener('click', async () => {
+        const destinationAddress = destinationInput.value.trim();
+        const addresses = addressBulk.value
+          .split(/\r?\n/)
+          .map(s => s.trim())
+          .filter(Boolean);
+
+        if (!destinationAddress) {
+          alert('도착지 주소를 입력하세요.');
+          return;
+        }
+        if (addresses.length === 0) {
+          alert('거주지 주소를 한 줄에 하나씩 입력하세요.');
+          return;
+        }
+        compareBtn.disabled = true;
+        statusEl.textContent = '계산 중... (주소 수: ' + addresses.length + ')';
+        try {
+          const body = {
+            destinationAddress,
+            rows: addresses.map(a => ({ address: a }))
+          };
+          const res = await fetch('/api/compare', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(body)
+          });
+          if (!res.ok) {
+            const err = await res.json().catch(() => ({}));
+            throw new Error(err.message || '서버 오류');
+          }
+          const data = await res.json();
+          renderResults(addresses, data.results || []);
+          statusEl.textContent += '';
+          statusEl.textContent = '완료';
+        } catch (e) {
+          statusEl.textContent = '실패: ' + e.message;
+        } finally {
+          compareBtn.disabled = false;
+        }
+      });
+
+      function toCsvValue(val) {
+        const s = String(val ?? '');
+        return '"' + s.replace(/"/g, '""') + '"';
+      }
+
+      downloadBtn.addEventListener('click', () => {
+        if (!lastExportRows.length) {
+          alert('먼저 거리 비교를 실행하세요.');
+          return;
+        }
+        const header = ['전처리 주소','카카오맵 (km)','T맵 (km)','GAP (km)'];
+        const csv = [header.map(toCsvValue).join(','), ...lastExportRows.map(row => row.map(toCsvValue).join(','))].join('\n');
+        // Excel 한글 깨짐 방지: UTF-8 BOM(\uFEFF) 추가
+        const bom = '\uFEFF';
+        const blob = new Blob([bom + csv], { type: 'text/csv;charset=utf-8;' });
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        a.href = url;
+        const ts = new Date().toISOString().slice(0,19).replace(/[:T]/g,'-');
+        a.download = `distance_compare_${ts}.csv`;
+        document.body.appendChild(a);
+        a.click();
+        document.body.removeChild(a);
+        URL.revokeObjectURL(url);
+      });
+    </script>
+  </body>
+  </html>
+
+
